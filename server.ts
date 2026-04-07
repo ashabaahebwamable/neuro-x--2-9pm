@@ -1,8 +1,7 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
+import Database from 'better-sqlite3';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import cors from 'cors';
@@ -30,15 +29,13 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 let db: any;
+let app: any;
 
-async function initDb() {
+function initDb() {
   console.time('DB Init');
-  db = await open({
-    filename: './neurox.db',
-    driver: sqlite3.Database
-  });
+  db = new Database('./neurox.db');
 
-  await db.exec(`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS Users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -83,21 +80,19 @@ async function initDb() {
   `);
 
   // Seed default users if empty
-  const userCount = await db.get('SELECT COUNT(*) as count FROM Users');
+  const userCount = db.prepare('SELECT COUNT(*) as count FROM Users').get() as { count: number };
   if (userCount.count === 0) {
-    const hashedPassword = await bcrypt.hash('password123', 10);
-    await db.run('INSERT INTO Users (name, email, password, role) VALUES (?, ?, ?, ?)', 
-      ['Dr. Alice', 'radiologist@neurox.com', hashedPassword, 'Radiologist']);
-    await db.run('INSERT INTO Users (name, email, password, role) VALUES (?, ?, ?, ?)', 
-      ['Dr. Bob', 'doctor@neurox.com', hashedPassword, 'Doctor']);
-    await db.run('INSERT INTO Users (name, email, password, role) VALUES (?, ?, ?, ?)', 
-      ['Dr. Charlie', 'anesthesiologist@neurox.com', hashedPassword, 'Anesthesiologist']);
+    const hashedPassword = bcrypt.hashSync('password123', 10);
+    const insertUser = db.prepare('INSERT INTO Users (name, email, password, role) VALUES (?, ?, ?, ?)');
+    insertUser.run('Dr. Alice', 'radiologist@neurox.com', hashedPassword, 'Radiologist');
+    insertUser.run('Dr. Bob', 'doctor@neurox.com', hashedPassword, 'Doctor');
+    insertUser.run('Dr. Charlie', 'anesthesiologist@neurox.com', hashedPassword, 'Anesthesiologist');
   }
   console.timeEnd('DB Init');
 }
 
-async function startServer() {
-  const app = express();
+function startServer() {
+  app = express();
   app.use(express.json());
   app.use(cors());
 
@@ -144,19 +139,19 @@ async function startServer() {
   // --- API Routes ---
   
   // Register
-  app.post('/api/register', async (req, res) => {
+  app.post('/api/register', (req, res) => {
     try {
       if (!db) return res.status(503).json({ message: 'Database initializing' });
       const { name, email, password, role } = req.body;
       
-      const existingUser = await db.get('SELECT * FROM Users WHERE email = ?', [email]);
+      const existingUser = db.prepare('SELECT * FROM Users WHERE email = ?').get(email);
       if (existingUser) {
         return res.status(400).json({ message: 'User already exists' });
       }
 
-      const hashedPassword = await bcrypt.hash(password, 10);
-      await db.run('INSERT INTO Users (name, email, password, role) VALUES (?, ?, ?, ?)', 
-        [name, email, hashedPassword, role]);
+      const hashedPassword = bcrypt.hashSync(password, 10);
+      db.prepare('INSERT INTO Users (name, email, password, role) VALUES (?, ?, ?, ?)').run(
+        name, email, hashedPassword, role);
       
       res.status(201).json({ message: 'User registered successfully' });
     } catch (error) {
@@ -166,23 +161,25 @@ async function startServer() {
   });
 
   // Login
-  app.post('/api/login', async (req, res) => {
+  app.post('/api/login', (req, res) => {
     try {
+      console.log('Login request body:', req.body);
+      console.log('Login request headers:', req.headers);
       if (!db) return res.status(503).json({ message: 'Database initializing' });
       const { email, password } = req.body;
-      const user = await db.get('SELECT * FROM Users WHERE email = ?', [email]);
+      const user = db.prepare('SELECT * FROM Users WHERE email = ?').get(email) as any;
       
-      if (user && await bcrypt.compare(password, user.password)) {
+      if (user && bcrypt.compareSync(password, user.password)) {
         const token = jwt.sign({ id: user.id, email: user.email, role: user.role, name: user.name }, JWT_SECRET);
         
         // Start shift
-        const shift = await db.run('INSERT INTO Shifts (user_id, login_time) VALUES (?, ?)', 
-          [user.id, new Date().toISOString()]);
+        const shiftResult = db.prepare('INSERT INTO Shifts (user_id, login_time) VALUES (?, ?)').run(
+          user.id, new Date().toISOString());
         
         res.json({ 
           token, 
           user: { id: user.id, name: user.name, email: user.email, role: user.role },
-          shiftId: shift.lastID
+          shiftId: shiftResult.lastInsertRowid
         });
       } else {
         res.status(401).json({ message: 'Invalid credentials' });
@@ -194,11 +191,11 @@ async function startServer() {
   });
 
   // Logout
-  app.post('/api/logout', authenticateToken, async (req: any, res) => {
+  app.post('/api/logout', authenticateToken, (req: any, res) => {
     try {
       if (!db) return res.status(503).json({ message: 'Database initializing' });
-      await db.run('UPDATE Shifts SET logout_time = ? WHERE user_id = ? AND logout_time IS NULL', 
-        [new Date().toISOString(), req.user.id]);
+      db.prepare('UPDATE Shifts SET logout_time = ? WHERE user_id = ? AND logout_time IS NULL').run(
+        new Date().toISOString(), req.user.id);
       res.json({ message: 'Logged out' });
     } catch (error) {
       console.error('Logout error:', error);
@@ -207,10 +204,10 @@ async function startServer() {
   });
 
   // Get Users (for transferring cases)
-  app.get('/api/users', authenticateToken, async (req: any, res) => {
+  app.get('/api/users', authenticateToken, (req: any, res) => {
     try {
       if (!db) return res.status(503).json({ message: 'Database initializing' });
-      const users = await db.all('SELECT id, name, role FROM Users WHERE id != ?', [req.user.id]);
+      const users = db.prepare('SELECT id, name, role FROM Users WHERE id != ?').all(req.user.id);
       res.json(users);
     } catch (error) {
       console.error('Get users error:', error);
@@ -219,15 +216,15 @@ async function startServer() {
   });
 
   // Get Shift Stats
-  app.get('/api/shift-stats', authenticateToken, async (req: any, res) => {
+  app.get('/api/shift-stats', authenticateToken, (req: any, res) => {
     try {
       if (!db) return res.status(503).json({ message: 'Database initializing' });
-      const stats = await db.get(`
+      const stats = db.prepare(`
         SELECT login_time, cases_handled 
         FROM Shifts 
         WHERE user_id = ? AND logout_time IS NULL 
         ORDER BY id DESC LIMIT 1
-      `, [req.user.id]);
+      `).get(req.user.id);
       res.json(stats || { login_time: null, cases_handled: 0 });
     } catch (error) {
       console.error('Get shift stats error:', error);
@@ -236,21 +233,21 @@ async function startServer() {
   });
 
   // Upload Case
-  app.post('/api/cases', authenticateToken, upload.single('image'), async (req: any, res) => {
+  app.post('/api/cases', authenticateToken, upload.single('image'), (req: any, res) => {
     try {
       if (!db) return res.status(503).json({ message: 'Database initializing' });
       const { patientName, findings, confidence } = req.body;
       const imagePath = req.file ? `/uploads/${req.file.filename}` : null;
       
-      const result = await db.run(`
+      const result = db.prepare(`
         INSERT INTO Cases (uploaded_by, patient_name, image_path, findings, confidence, status)
         VALUES (?, ?, ?, ?, ?, ?)
-      `, [req.user.id, patientName, imagePath, findings, confidence, 'pending']);
+      `).run(req.user.id, patientName, imagePath, findings, confidence, 'pending');
 
       // Update shift case count
-      await db.run('UPDATE Shifts SET cases_handled = cases_handled + 1 WHERE user_id = ? AND logout_time IS NULL', [req.user.id]);
+      db.prepare('UPDATE Shifts SET cases_handled = cases_handled + 1 WHERE user_id = ? AND logout_time IS NULL').run(req.user.id);
 
-      res.json({ id: result.lastID, imagePath });
+      res.json({ id: result.lastInsertRowid, imagePath });
     } catch (error) {
       console.error('Upload case error:', error);
       res.status(500).json({ message: 'Internal server error' });
@@ -258,17 +255,17 @@ async function startServer() {
   });
 
   // Transfer Case
-  app.post('/api/cases/transfer', authenticateToken, async (req: any, res) => {
+  app.post('/api/cases/transfer', authenticateToken, (req: any, res) => {
     try {
       if (!db) return res.status(503).json({ message: 'Database initializing' });
       const { caseId, sentTo, notes } = req.body;
       
-      await db.run(`
+      db.prepare(`
         INSERT INTO CaseTransfers (case_id, sent_by, sent_to, notes)
         VALUES (?, ?, ?, ?)
-      `, [caseId, req.user.id, sentTo, notes]);
+      `).run(caseId, req.user.id, sentTo, notes);
 
-      await db.run('UPDATE Cases SET status = ? WHERE id = ?', ['transferred', caseId]);
+      db.prepare('UPDATE Cases SET status = ? WHERE id = ?').run('transferred', caseId);
       
       res.json({ message: 'Case transferred successfully' });
     } catch (error) {
@@ -278,17 +275,17 @@ async function startServer() {
   });
 
   // Get Cases (Radiologist)
-  app.get('/api/cases/radiologist', authenticateToken, async (req: any, res) => {
+  app.get('/api/cases/radiologist', authenticateToken, (req: any, res) => {
     try {
       if (!db) return res.status(503).json({ message: 'Database initializing' });
-      const cases = await db.all(`
+      const cases = db.prepare(`
         SELECT c.*, ct.sent_to, u.name as sent_to_name
         FROM Cases c
         LEFT JOIN CaseTransfers ct ON c.id = ct.case_id
         LEFT JOIN Users u ON ct.sent_to = u.id
         WHERE c.uploaded_by = ?
         ORDER BY c.created_at DESC
-      `, [req.user.id]);
+      `).all(req.user.id);
       res.json(cases);
     } catch (error) {
       console.error('Get radiologist cases error:', error);
@@ -297,17 +294,17 @@ async function startServer() {
   });
 
   // Get Cases (Doctor/Anesthesiologist)
-  app.get('/api/cases/specialist', authenticateToken, async (req: any, res) => {
+  app.get('/api/cases/specialist', authenticateToken, (req: any, res) => {
     try {
       if (!db) return res.status(503).json({ message: 'Database initializing' });
-      const cases = await db.all(`
+      const cases = db.prepare(`
         SELECT c.*, ct.notes, u.name as radiologist_name
         FROM Cases c
         JOIN CaseTransfers ct ON c.id = ct.case_id
         JOIN Users u ON c.uploaded_by = u.id
         WHERE ct.sent_to = ?
         ORDER BY ct.timestamp DESC
-      `, [req.user.id]);
+      `).all(req.user.id);
       res.json(cases);
     } catch (error) {
       console.error('Get specialist cases error:', error);
@@ -316,11 +313,11 @@ async function startServer() {
   });
 
   // Update Case Status
-  app.patch('/api/cases/:id/status', authenticateToken, async (req: any, res) => {
+  app.patch('/api/cases/:id/status', authenticateToken, (req: any, res) => {
     try {
       if (!db) return res.status(503).json({ message: 'Database initializing' });
       const { status } = req.body;
-      await db.run('UPDATE Cases SET status = ? WHERE id = ?', [status, req.params.id]);
+      db.prepare('UPDATE Cases SET status = ? WHERE id = ?').run(status, req.params.id);
       res.json({ message: 'Status updated' });
     } catch (error) {
       console.error('Update status error:', error);
@@ -329,11 +326,15 @@ async function startServer() {
   });
 
   // --- Startup Sequence ---
+  initializeServer();
+}
+
+async function initializeServer() {
   try {
     console.log('--- NeuroX Terminal Initialization ---');
     
     console.log('Step 1: Initializing Database...');
-    await initDb();
+    initDb();
     console.log('Database Initialized.');
 
     if (process.env.NODE_ENV !== 'production') {
