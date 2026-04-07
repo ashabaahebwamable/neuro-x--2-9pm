@@ -115,8 +115,17 @@ async function startServer() {
   });
 
   // Start listening IMMEDIATELY to satisfy platform checks
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`NeuroX Server listening on port ${PORT}`);
+  });
+
+  server.on('error', (error: any) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(`Port ${PORT} is already in use`);
+    } else {
+      console.error('Server error:', error);
+    }
+    process.exit(1);
   });
 
   // Auth Middleware
@@ -329,25 +338,33 @@ async function startServer() {
 
     if (process.env.NODE_ENV !== 'production') {
       console.log('Step 2: Initializing Vite Middleware...');
-      const vite = await createViteServer({
-        server: { middlewareMode: true },
-        appType: 'spa',
-      });
-      app.use(vite.middlewares);
-      console.log('Vite Middleware Ready.');
+      try {
+        const vite = await createViteServer({
+          server: { middlewareMode: true },
+          appType: 'spa',
+        });
+        app.use(vite.middlewares);
+        console.log('Vite Middleware Ready.');
+      } catch (viteError) {
+        console.error('Vite initialization failed:', viteError);
+        process.exit(1);
+      }
     } else {
       console.log('Step 2: Serving Production Assets...');
       const distPath = path.join(process.cwd(), 'dist');
       if (fs.existsSync(distPath)) {
         app.use(express.static(distPath));
-      app.get('*all', (req, res) => {
-        res.sendFile(path.join(distPath, 'index.html'));
-      });
+        app.get('*', (req, res) => {
+          res.sendFile(path.join(distPath, 'index.html'));
+        });
+      } else {
+        console.warn('dist directory not found. Production build may be missing.');
       }
     }
     console.timeEnd('Server Startup');
   } catch (error) {
     console.error('Failed to initialize services:', error);
+    process.exit(1);
   }
 }
 
