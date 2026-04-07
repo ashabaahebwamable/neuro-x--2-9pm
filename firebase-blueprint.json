@@ -1,0 +1,63 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user of the NeuroX platform.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "format": "email", "description": "User's email address" },
+        "name": { "type": "string", "description": "User's full name" },
+        "role": { "type": "string", "enum": ["admin", "radiologist", "technician"], "description": "User's role in the hospital" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the user was created" }
+      },
+      "required": ["uid", "email", "name", "role"]
+    },
+    "MedicalCase": {
+      "title": "Medical Case",
+      "description": "A medical case containing ultrasound imagery and AI analysis.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique case ID" },
+        "patientName": { "type": "string", "description": "Name of the patient" },
+        "modality": { "type": "string", "description": "Imaging modality (e.g., MSK Ultrasound)" },
+        "status": { "type": "string", "enum": ["pending", "analyzed", "reviewed"], "description": "Current status of the case" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the case was created" },
+        "imageUrl": { "type": "string", "format": "uri", "description": "URL to the ultrasound image" },
+        "findings": { "type": "string", "description": "AI analysis findings" },
+        "confidence": { "type": "number", "description": "AI confidence score" },
+        "maskPath": { "type": "string", "description": "SVG path for nerve segmentation" },
+        "technicianId": { "type": "string", "description": "UID of the technician who uploaded the case" },
+        "radiologistId": { "type": "string", "description": "UID of the radiologist who reviewed the case" }
+      },
+      "required": ["patientName", "modality", "status", "createdAt", "imageUrl", "technicianId"]
+    },
+    "Shift": {
+      "title": "Shift",
+      "description": "A work shift for a hospital staff member.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique shift ID" },
+        "userId": { "type": "string", "description": "UID of the staff member" },
+        "startTime": { "type": "string", "format": "date-time", "description": "Shift start time" },
+        "endTime": { "type": "string", "format": "date-time", "description": "Shift end time" },
+        "status": { "type": "string", "enum": ["active", "completed", "cancelled"], "description": "Current status of the shift" }
+      },
+      "required": ["userId", "startTime", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile documents."
+    },
+    "/cases/{caseId}": {
+      "schema": "MedicalCase",
+      "description": "Medical case documents."
+    },
+    "/shifts/{shiftId}": {
+      "schema": "Shift",
+      "description": "Staff shift documents."
+    }
+  }
+}

@@ -1,0 +1,145 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId} (Firebase Auth UID)
+    // Fields:
+    //   - uid: string (required) - Firebase Auth UID
+    //   - email: string (required, email format) - User's email address
+    //   - name: string (required) - User's full name
+    //   - role: string (required, enum: ['admin', 'radiologist', 'technician']) - User's role
+    //   - createdAt: string (required, date-time format) - When the user was created
+    //
+    // Collection: cases
+    // Document ID: {caseId}
+    // Fields:
+    //   - id: string (optional) - Unique case ID
+    //   - patientName: string (required) - Name of the patient
+    //   - modality: string (required) - Imaging modality
+    //   - status: string (required, enum: ['pending', 'analyzed', 'reviewed']) - Current status
+    //   - createdAt: string (required, date-time format) - When the case was created
+    //   - imageUrl: string (required, uri format) - URL to the ultrasound image
+    //   - findings: string (optional) - AI analysis findings
+    //   - confidence: number (optional) - AI confidence score
+    //   - maskPath: string (optional) - SVG path for nerve segmentation
+    //   - technicianId: string (required) - UID of the technician who uploaded the case
+    //   - radiologistId: string (optional) - UID of the radiologist who reviewed the case
+    //
+    // Collection: shifts
+    // Document ID: {shiftId}
+    // Fields:
+    //   - id: string (optional) - Unique shift ID
+    //   - userId: string (required) - UID of the staff member
+    //   - startTime: string (required, date-time format) - Shift start time
+    //   - endTime: string (optional, date-time format) - Shift end time
+    //   - status: string (required, enum: ['active', 'completed', 'cancelled']) - Current status
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "mableashaba7@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isTechnician() {
+      return isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'technician';
+    }
+
+    function isRadiologist() {
+      return isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'radiologist';
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidUrl(url) {
+      return url is string && (url.matches("^https://.*") || url.matches("^http://.*") || url.matches("^data:image/.*"));
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasRequiredFields(['uid', 'email', 'name', 'role', 'createdAt']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             data.role in ['admin', 'Radiologist', 'Doctor', 'Anesthesiologist', 'technician'] &&
+             isValidDateString(data.createdAt);
+    }
+
+    function isValidCase(data) {
+      return hasRequiredFields(['patientName', 'status', 'createdAt', 'imageUrl', 'technicianId']) &&
+             isValidDateString(data.createdAt) &&
+             isValidUrl(data.imageUrl) &&
+             data.technicianId == request.auth.uid;
+    }
+
+    function isValidShift(data) {
+      return hasRequiredFields(['userId', 'startTime', 'status']) &&
+             data.userId == request.auth.uid &&
+             data.status in ['active', 'completed', 'cancelled'];
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role != 'admin' || isAdmin());
+      allow update: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == resource.data.role || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /cases/{caseId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidCase(request.resource.data);
+      allow update: if isAuthenticated() && (request.resource.data.technicianId == resource.data.technicianId || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /shifts/{shiftId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidShift(request.resource.data);
+      allow update: if isAuthenticated() && (isOwner(resource.data.userId) || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}

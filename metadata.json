@@ -1,0 +1,5 @@
+{
+  "name": "neuro x",
+  "description": "A production-ready full-stack hospital workflow platform for automated peripheral nerve segmentation, featuring secure backend AI proxying, real-time database integration, and auto-scaling capabilities.",
+  "requestFramePermissions": []
+}
